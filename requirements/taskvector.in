@@ -1,0 +1,6 @@
+# Extra dependencies of the `taskvector` image: CPU-only torch and timm on top of serving.
+-c serve.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+timm>=1.0

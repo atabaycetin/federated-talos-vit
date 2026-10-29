@@ -1,0 +1,8 @@
+# Allowlist: the image needs only the lock files, the package source and the packaged model store.
+*
+!requirements/*.txt
+!src/
+!model_store/
+**/__pycache__
+**/*.egg-info
+model_store/**/model.onnx

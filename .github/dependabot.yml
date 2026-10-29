@@ -1,0 +1,27 @@
+# Weekly grouped PRs that keep every pin current; CI (including the vulnerability scan) runs on
+# each PR before you merge.
+version: 2
+updates:
+  # SHA-pinned actions in ci.yml: bumps the SHA and the version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # The python:3.12-slim digest in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Hashed lock files compiled with pip-compile (requirements/*.in -> *.txt).
+  - package-ecosystem: pip
+    directory: /requirements
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]

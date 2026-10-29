@@ -1,0 +1,27 @@
+# Fallback model: frozen DINO ViT-S/16 + trained linear head. Minutes, not hours.
+# Produces the same bundle format, so the serving stack doesn't change when TaLoS lands.
+run_name: linear-probe-cifar100
+task: cifar100
+method: linear_probe
+seed: 42
+device: auto
+epochs: 2
+
+model:
+  backbone: vit_small_patch16_224.dino
+  dropout: 0.0
+
+data:
+  dataset: cifar100
+  batch_size: 128
+  num_workers: 6
+
+optim:
+  head_lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0004
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment: talos-production
+  registered_model: talos-vit-cifar100

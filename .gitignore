@@ -6,3 +6,15 @@ __pycache__/
 .vscode/
 *.log
 .idea
+
+# production layer outputs
+artifacts/
+model_store/
+model_store.tar.gz
+mlruns/
+mlartifacts/
+mlflow.db
+*.onnx
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

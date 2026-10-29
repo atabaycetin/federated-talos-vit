@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    image: talos-api:local
+    ports: ["8000:8000"]
+    environment:
+      THREADS: "2"
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    depends_on: [api]

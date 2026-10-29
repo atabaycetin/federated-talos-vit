@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "talos-mlops"
+version = "0.1.0"
+description = "Production layer for TaLoS sparse fine-tuning of DINO ViT-S/16: training pipeline, ONNX/INT8 export, FastAPI serving."
+requires-python = ">=3.10"
+readme = "README.md"
+# Serving needs only these; training/export pull in torch via the `train` extra.
+dependencies = [
+    "numpy>=1.26",
+    "pillow>=10",
+    "pydantic>=2.6",
+    "pyyaml>=6",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+    "onnxruntime>=1.18",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "timm>=1.0",
+    "mlflow>=2.16",
+    "onnx>=1.16",
+    "onnxscript>=0.1",
+    "tqdm>=4.66",
+]
+dev = [
+    "ruff>=0.5",
+]
+
+[project.scripts]
+talos = "talos_mlops.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src"]
+# Lint only the production layer; the research code keeps its original style.
+include = ["src/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["B008"]

@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - run: pip install ruff
+      - run: ruff check src
+      - run: ruff format --check src
+
+  build:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Fetch model store
+        # The trained bundle lives in a GitHub Release (see scripts/publish_model.sh), not in git.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_RELEASE: ${{ vars.MODEL_RELEASE }}
+        run: |
+          mkdir -p model_store
+          if [ -n "$MODEL_RELEASE" ]; then
+            gh release download "$MODEL_RELEASE" --pattern model_store.tar.gz
+            tar -xzf model_store.tar.gz
+          else
+            echo "::warning::MODEL_RELEASE not set; building an image without models"
+          fi
+      - id: meta
+        run: echo "tag=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]'):${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Container smoke test
+        run: |
+          docker run -d --name api -p 8000:8000 "${{ steps.meta.outputs.tag }}"
+          for i in $(seq 1 30); do curl -s localhost:8000/health && break; sleep 1; done
+          echo
+          if [ -n "${{ vars.MODEL_RELEASE }}" ]; then
+            curl -sf localhost:8000/health
+            # The runner's Python has no Pillow; the image does, so make the probe PNG in there.
+            docker exec api python -c "from PIL import Image; Image.new('RGB',(32,32),(90,140,200)).save('/tmp/probe.png')"
+            docker cp api:/tmp/probe.png probe.png
+            curl -sf -F file=@probe.png localhost:8000/predict
+          fi
+          curl -sf localhost:8000/metrics | grep -q talos_requests
+          docker logs api
+      - name: Vulnerability scan
+        # Trivy from its official image, pinned by digest (v0.76.1). Not trivy-action: its tags
+        # were hijacked in the March 2026 supply-chain incident (GHSA-69fq-xp46-6x23).
+        # Fails on HIGH/CRITICAL issues that have a fix available.
+        run: |
+          docker save "${{ steps.meta.outputs.tag }}" -o image.tar
+          docker run --rm -v "$PWD/image.tar:/image.tar:ro" \
+            aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+            image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress
+      - name: Push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          LATEST="${IMAGE,,}:latest"
+          docker tag "${{ steps.meta.outputs.tag }}" "$LATEST"
+          docker push "${{ steps.meta.outputs.tag }}"
+          docker push "$LATEST"
+
+  deploy:
+    needs: build
+    # Requires a model release too: an image built without models would replace the live revision with a 503.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_CONTAINERAPP_NAME != '' && vars.MODEL_RELEASE != ''
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Roll out new revision
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          az containerapp update \
+            --name "${{ vars.AZURE_CONTAINERAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${{ needs.build.outputs.tag }}"
+      - name: Post-deploy smoke test
+        run: |
+          FQDN=$(az containerapp show -n "${{ vars.AZURE_CONTAINERAPP_NAME }}" -g "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          # min-replicas 0 means a cold start; give it time.
+          for i in $(seq 1 20); do curl -sf "https://$FQDN/health" && exit 0; sleep 6; done
+          exit 1

@@ -1,0 +1,18 @@
+groups:
+  - name: talos
+    rules:
+      - alert: InputDrift
+        expr: max by (task) (talos_drift_psi) > 0.2
+        for: 15m
+        annotations:
+          summary: "Input drift on {{ $labels.task }} (PSI {{ $value | printf \"%.2f\" }})"
+      - alert: HighP95Latency
+        expr: histogram_quantile(0.95, sum by (le, task) (rate(talos_request_latency_seconds_bucket[5m]))) > 0.25
+        for: 10m
+        annotations:
+          summary: "p95 /predict latency above 250 ms on {{ $labels.task }}"
+      - alert: ErrorRate
+        expr: sum(rate(talos_requests_total{status="error"}[5m])) / sum(rate(talos_requests_total[5m])) > 0.01
+        for: 5m
+        annotations:
+          summary: "More than 1% of predictions are failing"
