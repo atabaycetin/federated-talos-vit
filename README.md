@@ -32,8 +32,7 @@ The backbone is the public DINO ViT-S/16 (`timm/vit_small_patch16_224.dino`), so
 ### Quickstart
 
 ```bash
-conda create -n talos-mlops python=3.12 && conda activate talos-mlops
-pip install -e ".[train,dev]"
+conda create -n talos-mlops python=3.12 && conda activate talos-mlops && pip install -e ".[train]"   # use ".[train,dev]" to also get ruff
 
 talos run --config configs/talos_cifar100.yaml               # train -> export -> benchmark -> register
 talos package --config configs/talos_cifar100.yaml --store model_store
