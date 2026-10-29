@@ -65,13 +65,14 @@ Two backends, chosen with `BACKEND`:
 
 Research results (50 epochs, see the report) are unchanged. The production model is a separate, shorter run and is reported on its own.
 
-**Production model** (`configs/talos_cifar100.yaml`): 1 linear-probe epoch, then **4** sparse epochs at 60% sparsity. 8.67M of the 21.7M backbone weights are trainable. Trained in about 48 minutes on an Apple M5 (MPS). The checkpoint was selected on the validation split; the test set was evaluated once.
+**Production models**, one per task on the same DINO backbone (`configs/talos_cifar100.yaml`, `configs/talos_cifar10.yaml`): 1 linear-probe epoch, then **4** sparse epochs at 60% sparsity. 8.67M of the 21.7M backbone weights are trainable. Each trained in under an hour on an Apple M5 (MPS). Checkpoints were selected on the validation split; each test set was evaluated once.
 
 | | val top-1 | test top-1 | test top-5 |
 |---|---|---|---|
-| TaLoS, 60% sparsity, 4 epochs | 88.72% | **88.46%** | 98.89% |
+| CIFAR-100: TaLoS, 60% sparsity, 4 epochs | 88.72% | **88.46%** | 98.89% |
+| CIFAR-10: TaLoS, 60% sparsity, 4 epochs | 98.04% | **97.96%** | 100.00% |
 
-Export and CPU inference (2,000 test images; latency at batch 1, 4 threads, Apple M5 CPU):
+Export and CPU inference for CIFAR-100 (2,000 test images; latency at batch 1, 4 threads, Apple M5 CPU). CIFAR-10 is similar: INT8 21.1 MB, 97.85% top-1, p95 11.7 ms.
 
 | variant | size (MB) | top-1 | agreement with fp32 | p50 (ms) | p95 (ms) |
 |---|---|---|---|---|---|
@@ -80,6 +81,19 @@ Export and CPU inference (2,000 test images; latency at batch 1, 4 threads, Appl
 | ONNX INT8 (served) | 21.2 | 88.65% | 98.75% | 10.5 | 11.2 |
 
 Each task's bundle (task vector plus head) is 35.9 MB. The backbone is the public DINO checkpoint.
+
+### Multi-task serving
+
+Both tasks run in one service: `POST /predict?task=cifar100` or `?task=cifar10`. Measured with Azure's per-replica limits (0.5 vCPU, 1 GiB) in Docker, alternating tasks on every request:
+
+| backend | how tasks are held | memory | latency p50 / p95 | task switch |
+|---|---|---|---|---|
+| `onnx` (deployed) | one INT8 model per task | 172 MiB | 66 / 155 ms | none |
+| `taskvector` | one fp32 backbone + a sparse τ and head per task | 917 MiB | 782 / 1,182 ms | 155 ms mean on 0.5 vCPU (12 ms on 4 M5 cores) |
+
+Swapping is exact: on real test images of both tasks, outputs from the shared backbone match the separately merged models with a maximum difference of 0.0.
+
+The `taskvector` backend scales with the number of tasks better. Each added task costs only a ~36 MB sparse τ and head, instead of a full model. But at this replica size it nearly fills the memory limit and runs fp32 PyTorch, so Azure runs the `onnx` image. The task-vector design pays off once there are many tasks, or the hardware is larger.
 
 ### Monitoring and drift
 
@@ -90,9 +104,11 @@ At training time, the validation set is summarized into reference histograms of 
 | traffic | requests correct | PSI (brightness / contrast) | PSI (confidence) | drift alert |
 |---|---|---|---|---|
 | 200 real test images | 89% | 0.03–0.06 | 0.05 | no |
-| + 300 darkened images | 85% | 1.43–1.49 | 0.01 | **yes** (Prometheus `InputDrift` pending) |
+| + 300 darkened images | 85% | 1.43–1.49 | 0.01 | **yes**: Prometheus `InputDrift` fires after its 15-minute window |
 
 The input shift is caught even though the model's confidence barely moves. A monitor that only watched the model's outputs would miss it. The end-to-end p95 latency for this run was 39 ms (CPU, in Docker on the M5).
+
+![Prometheus alerts page: InputDrift firing for task cifar100 at PSI 1.49, latency and error-rate alerts inactive](docs/images/prometheus-alerts.png)
 
 ### CI/CD and deployment
 
@@ -111,7 +127,7 @@ The service runs on **Azure Container Apps** (Switzerland North): 0.5 vCPU / 1 G
 The trained model store is published as a GitHub Release asset, not committed. CI downloads it and bakes it into the image:
 
 ```bash
-scripts/publish_model.sh configs/talos_cifar100.yaml model-v1   # uploads model_store.tar.gz, sets MODEL_RELEASE
+bash scripts/publish_model.sh configs/talos_cifar100.yaml configs/talos_cifar10.yaml model-v2   # packages every task, uploads, sets MODEL_RELEASE
 deploy/azure/setup.sh                                          # one-time: RG, environment, app, deploy identity, GitHub environment
 ```
 

@@ -1,0 +1,41 @@
+# Second task on the same backbone: DINO ViT-S/16 on CIFAR-10, 60% of backbone weights frozen.
+# One command:  talos run --config configs/talos_cifar10.yaml
+# Smoke test:   talos run --config configs/talos_cifar10.yaml --set epochs=1 --set data.limit_train=512 --set data.limit_eval=256
+run_name: talos-cifar10-s60
+task: cifar10
+method: talos
+seed: 42
+device: auto              # cuda > mps > cpu
+head_warmup_epochs: 1     # linear probe so Fisher scores aren't computed through a random head
+epochs: 4                 # sparse fine-tuning epochs (research runs used 50)
+
+model:
+  backbone: vit_small_patch16_224.dino
+  dropout: 0.3
+
+data:
+  dataset: cifar10
+  val_split: 0.1
+  batch_size: 64
+  num_workers: 6
+
+optim:
+  lr: 0.001
+  head_lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0004
+
+talos:
+  sparsity: 0.6           # 60% of backbone weights frozen; 40% least-sensitive weights trained
+  calib_fraction: 0.05
+  calib_batch_size: 16
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment: talos-production
+  registered_model: talos-vit-cifar10
+
+benchmark:
+  eval_samples: 2000
+  latency_iters: 200
+  threads: 4
