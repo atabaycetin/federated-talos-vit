@@ -51,10 +51,16 @@ Any config value can be overridden from the CLI, e.g. a 2-minute smoke run:
 | endpoint | |
 |---|---|
 | `POST /predict?task=&top_k=` | multipart image upload -> top-k labels, probabilities, model version, latency |
-| `GET /health` | 200 when models are loaded, 503 (with the load error) otherwise |
+| `GET /health` | 200 when models are loaded, 503 (with the load error) otherwise. Always public, for probes and CI. |
 | `GET /tasks` | loaded tasks with method, sparsity, τ size, test metrics |
 | `GET /drift` | PSI of live inputs vs. the validation set, per feature (channel means, contrast, top-1 confidence) |
 | `GET /metrics` | Prometheus: request counts by status, latency histograms, confidence, predicted classes, drift PSI, task swaps |
+
+**Authentication.** When `API_KEY` is set, every endpoint except `/health` and the docs requires it as an `X-API-Key` header. The check runs before the upload is read, so requests without the key cost almost nothing. The deployed service keeps the key as an Azure Container Apps secret (`API_KEY=secretref:api-key`), never in the image or the repo. On `/docs`, use the **Authorize** button. Without `API_KEY`, the service is open and logs a warning; that's for local runs and the CI smoke test.
+
+```bash
+curl -H "X-API-Key: $KEY" -F file=@cat.png "https://<app>.azurecontainerapps.io/predict?task=cifar10"
+```
 
 Two backends, chosen with `BACKEND`:
 
@@ -137,7 +143,7 @@ deploy/azure/setup.sh                                          # one-time: RG, e
 - **Least privilege.** The deploy identity has *Container Apps Contributor* on the app and its environment only: no rights over the resource group, no ability to create resources, and no access to its own credentials. The running container has no Azure identity at all. The workflow's GitHub token is read-only by default.
 - **Pinned inputs.** GitHub Actions are pinned to commit SHAs, and the base image to a digest. Python dependencies are installed from `pip-compile` lock files with `--require-hashes`, resolved for Linux inside the base image (`scripts/lock_requirements.sh`). Dependabot opens weekly PRs for all three, and each PR runs the full pipeline, scan included.
 - **Image hardening.** The image runs as a non-root user and contains only the INT8 model and serving code (no torch, no fp32 model). Trivy runs from its official image pinned by digest, not from `trivy-action`, whose tags were hijacked in March 2026.
-- **API hardening.** Uploads are rejected by `Content-Length` (413 over 10 MB, 411 without the header) before the body is read, image dimensions are capped against decompression bombs, and nothing is ever unpickled: model bundles are `.npz` files read with `allow_pickle=False`.
+- **API hardening.** Requests without the right `X-API-Key` are rejected (401) before any body is read, using a constant-time comparison. Uploads are rejected by `Content-Length` (413 over 10 MB, 411 without the header) before the body is read, image dimensions are capped against decompression bombs, and nothing is ever unpickled: model bundles are `.npz` files read with `allow_pickle=False`.
 
 ---
 

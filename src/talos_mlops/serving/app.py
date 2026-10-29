@@ -6,19 +6,23 @@ Configured by environment variables:
     DEFAULT_TASK  task used when ?task= is omitted      (default: first task)
     THREADS       inference threads, 0 = runtime default
     DRIFT_WINDOW  requests kept for the drift check     (default: 500)
+    API_KEY       if set, required as the X-API-Key header on everything but /health and the docs
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, Security, UploadFile
+from fastapi.security import APIKeyHeader
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
@@ -31,6 +35,10 @@ from talos_mlops.serving.predictors import OnnxPredictor, Predictor
 MAX_UPLOAD_BYTES = 10 * 2**20
 MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES + 64 * 2**10  # image plus multipart framing
 DRIFT_UPDATE_EVERY = 20
+PROTECTED_PATHS = frozenset({"/predict", "/tasks", "/drift", "/metrics"})
+# Declares the key in the OpenAPI schema so /docs gets an "Authorize" button; ApiKeyAuth enforces it.
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+log = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -40,6 +48,7 @@ class Settings:
     default_task: str | None = field(default_factory=lambda: os.getenv("DEFAULT_TASK") or None)
     threads: int = field(default_factory=lambda: int(os.getenv("THREADS", "0")))
     drift_window: int = field(default_factory=lambda: int(os.getenv("DRIFT_WINDOW", "500")))
+    api_key: str | None = field(default_factory=lambda: os.getenv("API_KEY") or None)
 
 
 class BodySizeLimit:
@@ -60,6 +69,25 @@ class BodySizeLimit:
                 return await _reject(send, 411, "Content-Length header required")
             if not length.isdigit() or int(length) > self.max_bytes:
                 return await _reject(send, 413, f"request larger than {self.max_bytes} bytes")
+        await self.app(scope, receive, send)
+
+
+class ApiKeyAuth:
+    """Require the X-API-Key header on PROTECTED_PATHS, checked before any of the body is read.
+
+    A FastAPI dependency would run only after the multipart upload had been parsed, so
+    unauthenticated clients could still make the service read and spool their uploads.
+    """
+
+    def __init__(self, app, key: str):
+        self.app = app
+        self.key = key.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] in PROTECTED_PATHS:
+            sent = dict(scope["headers"]).get(b"x-api-key", b"")
+            if not secrets.compare_digest(sent, self.key):
+                return await _reject(send, 401, "missing or invalid X-API-Key header")
         await self.app(scope, receive, send)
 
 
@@ -114,10 +142,15 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             init(state["predictor"] or load_predictor(settings, metrics))
         except Exception as exc:  # keep serving /health so the failure is visible
             state["error"] = f"{type(exc).__name__}: {exc}"
+        if not settings.api_key:
+            log.warning("API_KEY is not set: /predict, /tasks, /drift and /metrics are open to anyone")
         yield
 
     app = FastAPI(title="TaLoS ViT inference", version=__version__, lifespan=lifespan)
     app.add_middleware(BodySizeLimit, max_bytes=MAX_REQUEST_BYTES)
+    if settings.api_key:
+        app.add_middleware(ApiKeyAuth, key=settings.api_key)  # added last, so it runs first
+    auth = [Security(api_key_header)] if settings.api_key else []
 
     def ready_predictor() -> Predictor:
         pred = state["predictor"]
@@ -145,11 +178,11 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             "version": __version__,
         }
 
-    @app.get("/tasks")
+    @app.get("/tasks", dependencies=auth)
     def tasks() -> list[dict]:
         return [info.summary() for info in ready_predictor().tasks.values()]
 
-    @app.post("/predict", response_model=PredictResponse)
+    @app.post("/predict", response_model=PredictResponse, dependencies=auth)
     def predict(
         file: UploadFile = File(..., description="image file (JPEG, PNG, ...)"),
         task: str | None = Query(None, description="task name; defaults to DEFAULT_TASK"),
@@ -208,7 +241,7 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             metrics.drift_alert.labels(name).set(float(max(scores.values()) > PSI_ALERT))
         return scores
 
-    @app.get("/drift")
+    @app.get("/drift", dependencies=auth)
     def drift() -> dict:
         ready_predictor()
         out = {}
@@ -223,7 +256,7 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             }
         return out
 
-    @app.get("/metrics")
+    @app.get("/metrics", dependencies=auth)
     def prometheus_metrics() -> Response:
         return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
 
