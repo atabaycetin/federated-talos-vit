@@ -1,4 +1,4 @@
-# DLML_FL_project
+# Federated Learning and Task Localized Sparse Fine-Tuning Project for Machine Learning and Deep Learning Class
 
 This repository supports a research project on **Deep Learning and Federated Learning**, focusing on **centralized and federated training of Vision Transformers (ViT)** on the CIFAR-100 dataset. The project explores advanced fine-tuning and pruning methods such as **LoRA** and **TaLoS**, targeting efficient adaptation in distributed, resource-constrained scenarios.
 
