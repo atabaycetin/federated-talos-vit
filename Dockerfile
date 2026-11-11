@@ -10,7 +10,7 @@
 # Base image pinned by digest (multi-arch index), dependencies installed from hashed lock files:
 # the same commit always builds the same image, and a tampered package fails the hash check.
 # Dependabot bumps both; regenerate locks with scripts/lock_requirements.sh.
-FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS base
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app
